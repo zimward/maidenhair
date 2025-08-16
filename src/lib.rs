@@ -1,8 +1,9 @@
+#![allow(clippy::cast_possible_wrap)]
+
 use std::{
-    ffi::{CStr, CString, c_char, c_int, c_void},
+    ffi::{CStr, CString, c_char, c_double, c_int, c_void},
+    ptr::null_mut,
     str::FromStr,
-    thread::sleep,
-    time::Duration,
 };
 
 use sqlite3ext_sys::{
@@ -60,133 +61,261 @@ struct MaidenhairVFS {
     backend: *mut sqlite3_vfs,
 }
 
-// #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
-// unsafe extern "C" fn encrypt(
-//     file: *mut sqlite3_file,
-//     buffer: *const c_void,
-//     size: c_int,
-//     offset: sqlite3_int64,
-// ) -> c_int {
-//     debug("Encrypt called");
-//     let mut buf: Vec<u8> = Vec::with_capacity(size as usize);
-//     //rot13 for now
-//     for i in 0..buf.len() {
-//         buf[i] = unsafe { *(buffer.byte_offset(i as isize).cast::<u8>()) }.wrapping_add(13);
-//     }
-//     let act_file: *mut MaidenhairFile = file.cast::<MaidenhairFile>();
-//     unsafe { ((*act_file).pointers.write_ptr)(file, (&raw const buf[0]).cast(), size, offset) }
-// }
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+unsafe extern "C" fn encrypt(
+    file: *mut sqlite3_file,
+    buffer: *const c_void,
+    size: c_int,
+    offset: sqlite3_int64,
+) -> c_int {
+    debug("Encrypt called");
+    let mut buf: Vec<u8> = Vec::with_capacity(size as usize);
+    //rot13 for now
+    for i in 0..buf.len() {
+        buf[i] = unsafe { *(buffer.byte_offset(i as isize).cast::<u8>()) }.wrapping_add(13);
+    }
+    let act_file: *mut MaidenhairFile = file.cast::<MaidenhairFile>();
+    unsafe { ((*act_file).pointers.write_ptr)(file, (&raw const buf[0]).cast(), size, offset) }
+}
 
-// #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
-// unsafe extern "C" fn decrypt(
-//     file: *mut sqlite3_file,
-//     buffer: *mut c_void,
-//     size: c_int,
-//     offset: sqlite3_int64,
-// ) -> c_int {
-//     debug("Decrypt called");
-//     //read actual file
-//     let act_file: *mut MaidenhairFile = file.cast::<MaidenhairFile>();
-//     let ret = unsafe { ((*act_file).pointers.read_ptr)(file, buffer, size, offset) };
-//     //decrypt in place
-//     for i in 0..(size as isize) {
-//         unsafe {
-//             *buffer.byte_offset(i) = std::mem::transmute::<u8, c_void>(
-//                 *buffer.byte_offset(i).cast::<u8>().wrapping_byte_sub(13),
-//             );
-//         };
-//     }
-//     ret
-// }
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+unsafe extern "C" fn decrypt(
+    file: *mut sqlite3_file,
+    buffer: *mut c_void,
+    size: c_int,
+    offset: sqlite3_int64,
+) -> c_int {
+    debug("Decrypt called");
+    //read actual file
+    let act_file: *mut MaidenhairFile = file.cast::<MaidenhairFile>();
+    let ret = unsafe { ((*act_file).pointers.read_ptr)(file, buffer, size, offset) };
+    //decrypt in place
+    for i in 0..(size as isize) {
+        unsafe {
+            *buffer.byte_offset(i) = std::mem::transmute::<u8, c_void>(
+                *buffer.byte_offset(i).cast::<u8>().wrapping_byte_sub(13),
+            );
+        };
+    }
+    ret
+}
 
-// /// opens the backend file and passes the en/de-cryption shim functions
-// ///
-// /// # Safety
-// /// Passes function pointers of the VFS, which are either safe-ish rust ffi or come
-// /// from the backend VFS. No arithmetic is performed. Involves some type erasure
-// /// lets pray that the pointer offsets always match.
-// #[allow(
-//     unused_variables,
-//     non_snake_case,
-//     clippy::missing_const_for_fn,
-//     clippy::cast_possible_wrap
-// )]
-// pub unsafe extern "C" fn maidenhair_open(
-//     vfs: *mut sqlite3_vfs,
-//     zName: *const c_char,
-//     file: *mut sqlite3_file,
-//     flags: c_int,
-//     pOutFlags: *mut c_int,
-// ) -> c_int {
-//     if vfs.is_null() || zName.is_null() || file.is_null() || pOutFlags.is_null() {
-//         debug("open failed, some value was null");
-//         return SQLITE_ERROR as i32;
-//     }
-//     debug("Opening File");
-//     // let mvfs: *mut MaidenhairVFS = unsafe { (*vfs).pAppData.cast::<MaidenhairVFS>() };
-
-//     let backend: sqlite3_vfs = unsafe { *vfs };
-//     debug("recovered backend");
-
-//     //run backend open function to obtain r/w function pointers
-//     let mut ret_code: i32 = backend.xOpen.map_or(SQLITE_ERROR as i32, |open| unsafe {
-//         open(vfs, zName, file, flags, pOutFlags)
-//     });
-//     debug("Opened db file");
-
-//     if ret_code == SQLITE_OK as i32 {
-//         debug("Backend Open OK");
-//     }
-
-//     debug("Saving backend pointers");
-//     //should have been initialized by backend VFS
-//     let methods: &sqlite3_io_methods = unsafe { &*(*file).pMethods };
-//     let read = methods.xRead;
-//     let write = methods.xWrite;
-
-//     debug("Extending file object length");
-//     // shouldn't be needed as OS file size has already been increased
-//     // unsafe {
-//     //     #[allow(clippy::cast_sign_loss)]
-//     //     sqlite3_realloc64(
-//     //         file.cast(),
-//     //         backend.szOsFile as u64 + size_of::<BackendPtrs>() as u64,
-//     //     );
-//     // };
-
-//     let extendedFile: *mut MaidenhairFile = file.cast::<MaidenhairFile>();
-
-//     if let (Some(read), Some(write)) = (read, write) {
-//         unsafe {
-//             debug("adding wrapper functions");
-//             //wrapping function pointers for crypto
-//             let methods: *mut sqlite3_io_methods = ((*extendedFile).file).pMethods.cast_mut();
-//             (*methods).xRead = Some(decrypt);
-//             (*methods).xWrite = Some(encrypt);
-
-//             //backend ptrs
-//             (*extendedFile).pointers.read_ptr = read;
-//             (*extendedFile).pointers.write_ptr = write;
-//         }
-//     } else {
-//         //what the hell happend?
-//         ret_code = SQLITE_ERROR as i32;
-//     }
-
-//     ret_code
-// }
-
-#[unsafe(no_mangle)]
-unsafe extern "C" fn test(
+/// opens the backend file and passes the en/de-cryption shim functions
+///
+/// # Safety
+/// Passes function pointers of the VFS, which are either safe-ish rust ffi or come
+/// from the backend VFS. No arithmetic is performed. Involves some type erasure
+/// lets pray that the pointer offsets always match.
+#[allow(unused_variables, non_snake_case, clippy::missing_const_for_fn)]
+pub unsafe extern "C" fn maidenhair_open(
     vfs: *mut sqlite3_vfs,
     zName: *const c_char,
     file: *mut sqlite3_file,
     flags: c_int,
     pOutFlags: *mut c_int,
 ) -> c_int {
-    debug("Hello from test");
-    sleep(Duration::from_secs(2));
-    0
+    debug("opening:");
+    if vfs.is_null() {
+        debug("VFS was null");
+    }
+    if zName.is_null() {
+        debug("name was null");
+    }
+    if file.is_null() {
+        debug("file was null");
+        return SQLITE_ERROR as i32;
+    }
+    debug("Opening File");
+    let mvfs: &mut MaidenhairVFS = unsafe { &mut *(*vfs).pAppData.cast::<MaidenhairVFS>() };
+
+    let backend: &mut sqlite3_vfs = unsafe { &mut *mvfs.backend };
+    debug("recovered backend");
+
+    //run backend open function to obtain r/w function pointers
+    let mut ret_code: i32 = backend.xOpen.map_or(SQLITE_ERROR as i32, |open| unsafe {
+        open(mvfs.backend, zName, file, flags, pOutFlags)
+    });
+    debug("Opened db file");
+
+    if ret_code == SQLITE_OK as i32 {
+        debug("Backend Open OK");
+    }
+
+    debug("Saving backend pointers");
+    //should have been initialized by backend VFS
+    let methods: &sqlite3_io_methods = unsafe { &*(*file).pMethods };
+    let read = methods.xRead;
+    let write = methods.xWrite;
+
+    debug("Extending file object length");
+    // shouldn't be needed as OS file size has already been increased
+    // unsafe {
+    //     #[allow(clippy::cast_sign_loss)]
+    //     sqlite3_realloc64(
+    //         file.cast(),
+    //         backend.szOsFile as u64 + size_of::<BackendPtrs>() as u64,
+    //     );
+    // };
+
+    let extendedFile: &mut MaidenhairFile = unsafe { &mut *file.cast::<MaidenhairFile>() };
+
+    if let (Some(read), Some(write)) = (read, write) {
+        unsafe {
+            debug("adding wrapper functions");
+            //wrapping function pointers for crypto
+            println!("passed file: {:#16?}", (*file).pMethods);
+            println!("{:#16?}", extendedFile.file);
+            // let methods: &mut sqlite3_io_methods = &mut *(extendedFile.file).pMethods.cast_mut();
+            // methods.xRead = Some(read);
+            // methods.xWrite = Some(write);
+            debug("set new functions");
+            //backend ptrs
+            // extendedFile.pointers.read_ptr = read;
+            // extendedFile.pointers.write_ptr = write;
+            debug("added wrapper functions");
+        }
+    } else {
+        //what the hell happend?
+        ret_code = SQLITE_ERROR as i32;
+    }
+
+    ret_code
+}
+
+unsafe extern "C" fn mh_delete(vfs: *mut sqlite3_vfs, z_name: *const i8, sync_dir: c_int) -> c_int {
+    let vfs = unsafe { &mut *vfs };
+    let mh: &MaidenhairVFS = unsafe { &*vfs.pAppData.cast() };
+    unsafe {
+        (*mh.backend)
+            .xDelete
+            .map_or(SQLITE_ERROR as i32, |x_delete| {
+                x_delete(vfs, z_name, sync_dir)
+            })
+    }
+}
+
+unsafe extern "C" fn mh_access(
+    vfs: *mut sqlite3_vfs,
+    z_name: *const i8,
+    flags: c_int,
+    p_res_out: *mut c_int,
+) -> c_int {
+    let vfs = unsafe { &mut *vfs };
+    let mh: &MaidenhairVFS = unsafe { &*vfs.pAppData.cast() };
+    unsafe {
+        (*mh.backend)
+            .xAccess
+            .map_or(SQLITE_ERROR as i32, |x_access| {
+                x_access(vfs, z_name, flags, p_res_out)
+            })
+    }
+}
+
+unsafe extern "C" fn mh_full_pathname(
+    vfs: *mut sqlite3_vfs,
+    z_name: *const i8,
+    n_out: c_int,
+    z_out: *mut i8,
+) -> c_int {
+    let vfs = unsafe { &mut *vfs };
+    let mh: &MaidenhairVFS = unsafe { &*vfs.pAppData.cast() };
+    unsafe {
+        (*mh.backend)
+            .xFullPathname
+            .map_or(SQLITE_ERROR as i32, |x_full_pathname| {
+                x_full_pathname(vfs, z_name, n_out, z_out)
+            })
+    }
+}
+
+unsafe extern "C" fn mh_dl_open(vfs: *mut sqlite3_vfs, z_filename: *const i8) -> *mut c_void {
+    let vfs = unsafe { &mut *vfs };
+    let mh: &MaidenhairVFS = unsafe { &*vfs.pAppData.cast() };
+    unsafe {
+        (*mh.backend)
+            .xDlOpen
+            .map_or(null_mut(), |x_dl_open| x_dl_open(vfs, z_filename))
+    }
+}
+
+unsafe extern "C" fn mh_dl_close(vfs: *mut sqlite3_vfs, ptr: *mut c_void) {
+    let vfs = unsafe { &mut *vfs };
+    let mh: &MaidenhairVFS = unsafe { &*vfs.pAppData.cast() };
+    unsafe {
+        (*mh.backend)
+            .xDlClose
+            .map(|x_dl_close| x_dl_close(vfs, ptr))
+    };
+}
+
+unsafe extern "C" fn mh_dl_error(vfs: *mut sqlite3_vfs, n_byte: c_int, z_err: *mut i8) {
+    let vfs = unsafe { &mut *vfs };
+    let mh: &MaidenhairVFS = unsafe { &*vfs.pAppData.cast() };
+    unsafe {
+        (*mh.backend)
+            .xDlError
+            .map(|x_dl_error| x_dl_error(vfs, n_byte, z_err))
+    };
+}
+
+unsafe extern "C" fn mh_dl_symbol(
+    vfs: *mut sqlite3_vfs,
+    ptr: *mut c_void,
+    z_symbol: *const i8,
+) -> Option<unsafe extern "C" fn(*mut sqlite3_vfs, *mut c_void, *const i8)> {
+    let vfs = unsafe { &mut *vfs };
+    let mh: &MaidenhairVFS = unsafe { &*vfs.pAppData.cast() };
+    unsafe {
+        (*mh.backend)
+            .xDlSym
+            .and_then(|x_dl_open| x_dl_open(vfs, ptr, z_symbol))
+    }
+}
+
+unsafe extern "C" fn mh_randomness(vfs: *mut sqlite3_vfs, n_byte: c_int, z_out: *mut i8) -> c_int {
+    let vfs = unsafe { &mut *vfs };
+    let mh: &MaidenhairVFS = unsafe { &*vfs.pAppData.cast() };
+    unsafe {
+        (*mh.backend)
+            .xRandomness
+            .map_or(SQLITE_ERROR as i32, |x_randomness| {
+                x_randomness(vfs, n_byte, z_out)
+            })
+    }
+}
+
+unsafe extern "C" fn mh_sleep(vfs: *mut sqlite3_vfs, millis: c_int) -> c_int {
+    let vfs = unsafe { &mut *vfs };
+    let mh: &MaidenhairVFS = unsafe { &*vfs.pAppData.cast() };
+    unsafe {
+        (*mh.backend)
+            .xSleep
+            .map_or(SQLITE_ERROR as i32, |x_sleep| x_sleep(vfs, millis))
+    }
+}
+
+unsafe extern "C" fn mh_current_time(vfs: *mut sqlite3_vfs, time: *mut c_double) -> c_int {
+    let vfs = unsafe { &mut *vfs };
+    let mh: &MaidenhairVFS = unsafe { &*vfs.pAppData.cast() };
+    unsafe {
+        (*mh.backend)
+            .xCurrentTime
+            .map_or(SQLITE_ERROR as i32, |x_current_time| {
+                x_current_time(vfs, time)
+            })
+    }
+}
+
+unsafe extern "C" fn mh_last_error(vfs: *mut sqlite3_vfs, err: c_int, msg: *mut i8) -> c_int {
+    let vfs = unsafe { &mut *vfs };
+    let mh: &MaidenhairVFS = unsafe { &*vfs.pAppData.cast() };
+    unsafe {
+        (*mh.backend)
+            .xGetLastError
+            .map_or(SQLITE_ERROR as i32, |x_last_error| {
+                x_last_error(vfs, err, msg)
+            })
+    }
 }
 
 /// .
@@ -216,37 +345,45 @@ pub unsafe fn vfs_maidenhair_init(
             .unwrap_or_default()
     ));
     // i have no idea to get it free'ed after this
-    // let vfs = Box::leak(Box::new(MaidenhairVFS { backend }));
+    let vfs = Box::into_raw(Box::new(MaidenhairVFS { backend }));
 
     let name = Box::leak(Box::new(CString::from(c"maidenhair")));
-
-    Ok(Box::into_raw(Box::new(sqlite3_vfs {
-        iVersion: backend.iVersion,
+    let ver = backend.iVersion;
+    let mut res = Box::into_raw(Box::new(sqlite3_vfs {
+        iVersion: 1,
         //unwrap should never fail and be optimized out
         szOsFile: backend.szOsFile + i32::try_from(size_of::<BackendPtrs>()).unwrap_or(0),
         mxPathname: backend.mxPathname,
         //should be set by sqlite upon register if i understand correctly
         pNext: std::ptr::null_mut(),
         zName: name.as_ptr(),
-        pAppData: backend.pAppData,
-        // xOpen: backend.xOpen,
-        xOpen: Some(test),
-        xDelete: backend.xDelete,
-        xAccess: backend.xAccess,
-        xFullPathname: backend.xFullPathname,
-        xDlOpen: backend.xDlOpen,
-        xDlError: backend.xDlError,
-        xDlSym: backend.xDlSym,
-        xDlClose: backend.xDlClose,
-        xRandomness: backend.xRandomness,
-        xSleep: backend.xSleep,
-        xCurrentTime: backend.xCurrentTime,
-        xGetLastError: backend.xGetLastError,
-        xCurrentTimeInt64: backend.xCurrentTimeInt64,
-        xSetSystemCall: backend.xSetSystemCall,
-        xGetSystemCall: backend.xGetSystemCall,
-        xNextSystemCall: backend.xNextSystemCall,
-    })))
+        pAppData: vfs.cast(),
+        xOpen: Some(maidenhair_open),
+        xDelete: Some(mh_delete),
+        xAccess: Some(mh_access),
+        xFullPathname: Some(mh_full_pathname),
+        xDlOpen: Some(mh_dl_open),
+        xDlError: Some(mh_dl_error),
+        xDlSym: Some(mh_dl_symbol),
+        xDlClose: Some(mh_dl_close),
+        xRandomness: Some(mh_randomness),
+        xSleep: Some(mh_sleep),
+        xCurrentTime: Some(mh_current_time),
+        xGetLastError: Some(mh_last_error),
+        xCurrentTimeInt64: None,
+        xSetSystemCall: None,
+        xGetSystemCall: None,
+        xNextSystemCall: None,
+    }));
+
+    if ver >= 2 {
+        //currenttime
+    }
+    if ver >= 3 {
+        //syscalls
+    }
+
+    Ok(res)
 }
 
 /// .
@@ -257,7 +394,7 @@ pub unsafe fn vfs_maidenhair_init(
 //entrypoint
 #[allow(clippy::cast_possible_wrap, clippy::missing_panics_doc)]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sqlite3_maidenhair_init(
+pub extern "C" fn sqlite3_maidenhair_init(
     db: *mut sqlite3,
     err_msg: *mut *mut c_char,
     p_api: *mut sqlite3_api_routines,
@@ -281,28 +418,33 @@ pub unsafe extern "C" fn sqlite3_maidenhair_init(
     }
 }
 
-#[allow(clippy::missing_panics_doc)]
-#[test]
-pub fn load_and_run() {
-    use sqlx::{Connection, SqliteConnection};
-    use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
-    use std::str::FromStr;
-    let opts = SqliteConnectOptions::new()
-        .in_memory(true)
-        .extension("libmaidenhair.so");
-    let opts_with_vfs = SqliteConnectOptions::from_str("./test.db")
-        .unwrap()
-        .create_if_missing(true)
-        .extension("libmaidenhair.so")
-        .vfs("maidenhair");
-    smol::block_on(async {
-        //load extension
-        let _ = SqliteConnection::connect_with(&opts).await.unwrap();
-        //open with VFS
-        let db = SqlitePool::connect_with(opts_with_vfs).await.unwrap();
-        sqlx::query("CREATE TABLE hello (id INTEGER);")
-            .execute(&db)
-            .await
-            .unwrap();
-    });
+#[cfg(test)]
+mod tests {
+    #[allow(clippy::missing_panics_doc)]
+    #[test]
+    pub fn load_and_run() {
+        use sqlx::{Connection, SqliteConnection};
+        use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
+        use std::str::FromStr;
+        let opts = SqliteConnectOptions::new()
+            .in_memory(true)
+            .extension("libmaidenhair.so");
+        let opts_with_vfs = SqliteConnectOptions::from_str("./test.db")
+            .unwrap()
+            .create_if_missing(true)
+            .extension("libmaidenhair.so")
+            .vfs("maidenhair");
+        smol::block_on(async {
+            //load extension
+            let x = SqliteConnection::connect_with(&opts).await.unwrap();
+            //open with VFS
+            let db = SqlitePool::connect_with(opts_with_vfs).await.unwrap();
+            sqlx::query("CREATE TABLE hello (id INTEGER);")
+                .execute(&db)
+                .await
+                .unwrap();
+            sqlx::query("DROP TABLE hello;").execute(&db).await.unwrap();
+            std::mem::drop(x);
+        });
+    }
 }
